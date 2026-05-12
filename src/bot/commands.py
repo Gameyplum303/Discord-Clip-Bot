@@ -3,9 +3,9 @@ import re
 
 from .command_decorator import command
 from .session_config import SessionConfig
-from .transformers import (bytes_to_gb, disks_list_to_markdown,
-                           servers_list_to_markdown, status_to_markdown,
-                           vm_info_to_markdown)
+from .transformers import (backups_list_to_markdown, bytes_to_gb,
+                           disks_list_to_markdown, servers_list_to_markdown,
+                           status_to_markdown, vm_info_to_markdown)
 
 
 @command("Lists all servers in a node")
