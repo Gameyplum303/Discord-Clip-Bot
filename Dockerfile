@@ -18,16 +18,22 @@
 
 FROM python:3.12.2-slim
 
-RUN apt-get update && apt-get install -y make \
+# libopus0: Opus codec for discord.py[voice]
+# ffmpeg: required by discord.FFmpegOpusAudio for TTS playback in VC
+RUN apt-get update && apt-get install -y \
+    make \
+    libopus0 \
+    ffmpeg \
     && rm -rf /var/lib/apt/lists/*
-    
+
 WORKDIR /app
 COPY ./src/requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 RUN pip install flake8 black isort autopep8 sphinx sphinx-rtd-theme
 
-COPY ./src /app
+# Pre-download the Whisper tiny model so the first clip isn't slow
+RUN python -c "from faster_whisper import WhisperModel; WhisperModel('tiny', device='cpu', compute_type='int8')"
 
-# Install development tools
+COPY ./src /app
 
 CMD ["python", "main.py"]

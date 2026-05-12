@@ -8,3 +8,4 @@ services:
     working_dir: /app
     volumes:
       - ./src:/app
+      - ./clips:/app/clips

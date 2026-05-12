@@ -1,7 +1,10 @@
 proxmoxer
 requests
-discord.py
+py-cord[voice]
 urllib3
+faster-whisper
+numpy
+gTTS
 pytest
 pytest-cov
 pytest-mock
