@@ -1,4 +1,4 @@
-# README for Discord Proxmox Bot
+# Discord Proxmox Bot
 
 ## Overview
 
