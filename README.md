@@ -74,6 +74,10 @@ Anyone can use `/clip`. `/clipconfig` needs the **Manage Server** permission by 
 | `/clip join [channel]` | Join your voice channel (or the one you pick) and start listening |
 | `/clip leave` | Stop listening and leave |
 | `/clip status` | Show the trigger words, clips channel, clip length and cooldown |
+| `/clip now` | Save the last 20 seconds right away, no trigger word needed. You need to be in the call. |
+| `/clip test` | The bot listens to you for 10 seconds and privately shows what it heard and whether a trigger word would have fired |
+| `/clip optout` | The bot never records or transcribes your voice in this server, and drops anything it already had buffered |
+| `/clip optin` | Undo `/clip optout` |
 | `/clipconfig trigger add <phrase>` | Add a trigger word or short phrase (up to 4 words), e.g. `clip it` |
 | `/clipconfig trigger remove <phrase>` | Remove a trigger |
 | `/clipconfig trigger list` | List triggers |
@@ -97,7 +101,7 @@ Now when anyone in the call says "clip that" or "no way", a 20-second MP3 shows 
 
 ## Notes and tips
 
-- **Pick distinctive triggers.** Whisper sometimes mishears short or uncommon words. Words that sound unique ("clip that", "bookmark") work better than very short ones. If a word isn't being picked up, try `WHISPER_MODEL=small.en`.
+- **Pick distinctive triggers.** Whisper sometimes mishears short or uncommon words. Use `/clip test` to check which words it catches reliably. Words that sound unique ("clip that", "bookmark") work better than very short ones. If a word isn't being picked up, try `WHISPER_MODEL=small.en`.
 - **CPU.** `base.en` handles a few people talking at once on a normal desktop CPU. If transcription can't keep up, the bot drops audio windows rather than falling behind and logs a warning.
 - **The bot leaves on its own** when everyone else leaves the voice channel.
 - **Why Node.js?** Discord now encrypts voice end to end (the DAVE protocol). [`@discordjs/voice`](https://discord.js.org/docs/packages/voice/main) can decrypt received audio, while py-cord's voice receive currently can't, so the clipper is written in Node with a small Python process for Whisper.
@@ -105,9 +109,10 @@ Now when anyone in the call says "clip that" or "no way", a 20-second MP3 shows 
 ## Security and privacy
 
 - **Keep the token secret.** It lives only in `.env`, which is git-ignored. If it ever leaks, reset it in the Developer Portal straight away.
-- **Nobody can listen in through the bot.** `/clip join` only works for channels the person running it can see and connect to. `/clip leave` and moving the bot need the same access to the channel it's in, and `/clip status` won't name a channel you can't see.
+- **Nobody can listen in through the bot.** `/clip join` only works for channels the person running it can see and connect to. `/clip leave` and moving the bot need the same access to the channel it's in, and `/clip status` won't name a channel you can't see. `/clip now` and `/clip test` only work for people in the call, and `/clip test` only shows you your own words.
 - **Only admins change settings.** `/clipconfig` needs Manage Server by default. Clips from a private voice channel go wherever the clips channel is, so choose one only the right people can read.
 - **Audio stays local.** Speech recognition runs in the container, and the rolling buffer is in memory only and is dropped after 60 seconds. Only triggered clips are saved and posted.
+- **Anyone can opt out.** `/clip optout` keeps a person's voice out of all future clips. Their audio isn't kept in the buffer or sent to speech recognition.
 - **Tell people they're being recorded.** The bot shows up in the call while it's listening. Make sure everyone in the channel knows it's there and agrees, as recording laws differ by place.
 - **The container runs with least privilege.** It runs as a non-root user with a read-only filesystem, all Linux capabilities dropped, `no-new-privileges`, and memory and process limits. It opens no ports.
 - **Minimal Discord permissions.** The bot uses no privileged intents and gets only View Channels, Connect, Send Messages and Attach Files. Clip messages never ping anyone.

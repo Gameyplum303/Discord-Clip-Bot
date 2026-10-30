@@ -17,8 +17,13 @@ const STT_OVERLAP_MS = 1000;
 const CLIP_SETTLE_MS = 500;
 // The same spoken word can show up in two overlapping windows.
 const DUPLICATE_HIT_MS = 1500;
+// Minimum gap between one person's /clip now requests.
+const MANUAL_CLIP_COOLDOWN_MS = 10_000;
+// After a /clip test ends, wait this long for the last speech recognition results.
+const TEST_SETTLE_MS = 3000;
 
 const now = () => performance.now();
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // Owns the voice connection for one server: receives audio, keeps the rolling
 // timeline, runs trigger detection and posts clips.
@@ -37,6 +42,8 @@ export class GuildListener {
     this.cooldownUntil = 0;
     this.lastHitMs = -Infinity;
     this.pendingClips = new Set();
+    this.manualClipAt = new Map(); // userId -> last /clip now time
+    this.testers = new Map(); // userId -> { heard: [] } while /clip test runs
     this.destroyed = false;
   }
 
@@ -72,6 +79,8 @@ export class GuildListener {
     if (this.destroyed || this.subscriptions.has(userId)) return;
     const member = this.guild.members.cache.get(userId);
     if (member?.user.bot) return;
+    // People who opted out are never recorded or transcribed.
+    if (this.config().optedOut.includes(userId)) return;
 
     const stream = this.connection.receiver.subscribe(userId, {
       end: { behavior: EndBehaviorType.AfterSilence, duration: 800 },
@@ -108,7 +117,9 @@ export class GuildListener {
     sub.carry = continuing;
 
     const { triggers } = this.config();
-    if (this.destroyed || !triggers.length || now() < this.cooldownUntil) return;
+    const testing = this.testers.has(userId);
+    if (this.destroyed) return;
+    if (!testing && (!triggers.length || now() < this.cooldownUntil)) return;
 
     const pcm = toWhisperPcm(this.timeline.render(startMs, endMs, { userIds: [userId] }));
     this.stt
@@ -121,7 +132,8 @@ export class GuildListener {
     if (this.destroyed) return;
     const cfg = this.config();
     const hit = findTrigger(words, cfg.triggers);
-    if (!hit) return;
+    this.testers.get(userId)?.heard.push({ text: words.map((w) => w.word).join('').trim(), trigger: hit?.trigger ?? null });
+    if (!hit || !cfg.triggers.length) return;
 
     const hitMs = windowStartMs + hit.start * 1000;
     const t = now();
@@ -153,6 +165,42 @@ export class GuildListener {
     } catch (err) {
       this.log.error?.(`[${this.guild.name}] failed to post clip:`, err);
     }
+  }
+
+  // /clip now: post the last (before + after) seconds straight away.
+  // Returns false if this person asked too recently.
+  clipNow(userId) {
+    const t = now();
+    if (t - (this.manualClipAt.get(userId) ?? -Infinity) < MANUAL_CLIP_COOLDOWN_MS) return false;
+    this.manualClipAt.set(userId, t);
+    const cfg = this.config();
+    this.postClip({ clipStart: t - (cfg.beforeSec + cfg.afterSec) * 1000, clipEnd: t, hit: null, userId, cfg });
+    return true;
+  }
+
+  // /clip test: transcribe everything this person says for durationMs, even
+  // with no triggers set or during the cooldown, and return what was heard.
+  async runTest(userId, durationMs) {
+    const tester = { heard: [] };
+    this.testers.set(userId, tester);
+    try {
+      await sleep(durationMs);
+      const sub = this.subscriptions.get(userId);
+      if (sub) this.flush(userId, sub, now(), true);
+      await sleep(TEST_SETTLE_MS);
+      return tester.heard.filter((h) => h.text);
+    } finally {
+      if (this.testers.get(userId) === tester) this.testers.delete(userId);
+    }
+  }
+
+  // Stop recording someone and drop the audio already buffered for them.
+  forgetUser(userId) {
+    const sub = this.subscriptions.get(userId);
+    this.subscriptions.delete(userId);
+    sub?.stream.destroy();
+    this.timeline.speakers.delete(userId);
+    this.testers.delete(userId);
   }
 
   status() {

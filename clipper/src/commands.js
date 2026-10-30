@@ -1,5 +1,6 @@
 import {
   ChannelType,
+  escapeMarkdown,
   InteractionContextType,
   PermissionFlagsBits,
   SlashCommandBuilder,
@@ -9,6 +10,7 @@ import { normalizePhrase } from './triggers.js';
 
 export const MAX_TRIGGERS = 25;
 export const MAX_CLIP_SIDE_SEC = 30;
+export const TEST_SECONDS = 10;
 
 export const commandDefinitions = [
   new SlashCommandBuilder()
@@ -27,7 +29,13 @@ export const commandDefinitions = [
         ),
     )
     .addSubcommand((s) => s.setName('leave').setDescription('Stop listening and leave the voice channel'))
-    .addSubcommand((s) => s.setName('status').setDescription('Show what the bot is listening for and where clips go')),
+    .addSubcommand((s) => s.setName('status').setDescription('Show what the bot is listening for and where clips go'))
+    .addSubcommand((s) => s.setName('now').setDescription('Save the last few seconds right now, no trigger word needed'))
+    .addSubcommand((s) =>
+      s.setName('test').setDescription(`Check what the bot hears you say over the next ${TEST_SECONDS} seconds`),
+    )
+    .addSubcommand((s) => s.setName('optout').setDescription('Never record your voice in this server'))
+    .addSubcommand((s) => s.setName('optin').setDescription('Allow your voice in clips again')),
 
   new SlashCommandBuilder()
     .setName('clipconfig')
@@ -92,7 +100,8 @@ export const commandDefinitions = [
 
 const canJoin = (perms) =>
   Boolean(perms?.has(PermissionFlagsBits.ViewChannel) && perms.has(PermissionFlagsBits.Connect));
-const ephemeral = (content) => ({ content, flags: MessageFlags.Ephemeral });
+// Never ping anyone from a reply, even if a transcript contains @everyone.
+const ephemeral = (content) => ({ content, flags: MessageFlags.Ephemeral, allowedMentions: { parse: [] } });
 const fmtTriggers = (t) => (t.length ? t.map((w) => `\`${w}\``).join(', ') : '_none yet: add one with `/clipconfig trigger add`_');
 
 export function createCommandHandler({ store, listeners, startListening }) {
@@ -142,6 +151,55 @@ export function createCommandHandler({ store, listeners, startListening }) {
       return interaction.reply('👋 Stopped listening.');
     }
 
+    if (sub === 'optout' || sub === 'optin') {
+      const optedOut = cfg.optedOut.filter((id) => id !== interaction.user.id);
+      if (sub === 'optout') {
+        store.update(guild.id, { optedOut: [...optedOut, interaction.user.id] });
+        listeners.get(guild.id)?.forgetUser(interaction.user.id);
+        return interaction.reply(
+          ephemeral("🔇 You're opted out. I won't record or transcribe your voice in this server, and I've dropped anything I had buffered. Clips already posted aren't affected."),
+        );
+      }
+      store.update(guild.id, { optedOut });
+      return interaction.reply(ephemeral('🔊 Your voice can be included in clips again.'));
+    }
+
+    if (sub === 'now' || sub === 'test') {
+      const listener = listeners.get(guild.id);
+      if (!listener) return interaction.reply(ephemeral("I'm not in a voice channel. Use `/clip join` first."));
+      // Only people actually in the call can clip it or test with it.
+      const member = await guild.members.fetch(interaction.user.id);
+      if (member.voice.channelId !== listener.voiceChannel.id) {
+        return interaction.reply(ephemeral(`Join ${listener.voiceChannel} to use this.`));
+      }
+
+      if (sub === 'now') {
+        if (!listener.clipNow(interaction.user.id)) {
+          return interaction.reply(ephemeral('You just made a clip. Wait a few seconds and try again.'));
+        }
+        return interaction.reply(ephemeral(`✂️ Saving the last ${cfg.beforeSec + cfg.afterSec}s now.`));
+      }
+
+      if (cfg.optedOut.includes(interaction.user.id)) {
+        return interaction.reply(ephemeral("You're opted out, so I can't hear you. Use `/clip optin` first."));
+      }
+      await interaction.reply(
+        ephemeral(`🎧 Listening to you for ${TEST_SECONDS}s. Say your trigger words now: ${fmtTriggers(cfg.triggers)}`),
+      );
+      const heard = await listener.runTest(interaction.user.id, TEST_SECONDS * 1000);
+      const matched = [...new Set(heard.map((h) => h.trigger).filter(Boolean))];
+      const transcript = escapeMarkdown(heard.map((h) => h.text).join(' ').slice(0, 1500));
+      return interaction.editReply({
+        allowedMentions: { parse: [] },
+        content: [
+          transcript ? `**I heard:** ${transcript}` : "**I didn't hear anything.** Check your mic isn't muted and that you're not opted out.",
+          matched.length
+            ? `✅ That would trigger a clip: ${matched.map((t) => `\`${t}\``).join(', ')}`
+            : '❌ No trigger words heard. Try saying them more clearly, or pick words that are harder to mishear.',
+        ].join('\n'),
+      });
+    }
+
     if (sub === 'status') {
       const listener = listeners.get(guild.id);
       const s = listener?.status();
@@ -155,6 +213,7 @@ export function createCommandHandler({ store, listeners, startListening }) {
             `**Clips go to:** ${cfg.channelId ? `<#${cfg.channelId}>` : 'the channel `/clip join` was used in'}`,
             `**Clip length:** ${cfg.beforeSec}s before + ${cfg.afterSec}s after`,
             `**Cooldown:** ${cfg.cooldownSec}s`,
+            `**Your voice:** ${cfg.optedOut.includes(interaction.user.id) ? 'opted out (`/clip optin` to undo)' : 'included (`/clip optout` to stop)'}`,
           ].join('\n'),
         ),
       );
