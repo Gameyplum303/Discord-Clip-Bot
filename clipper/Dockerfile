@@ -20,9 +20,14 @@ RUN if [ "$WHISPER_MODEL" != "none" ]; then \
     fi
 
 COPY package.json package-lock.json ./
-RUN npm ci --omit=dev
+RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force
 COPY src src
 COPY stt stt
 
-ENV DATA_DIR=/app/data CLIPS_DIR=/app/clips
+# Run as the unprivileged "node" user; it only needs to write settings and clips.
+RUN mkdir -p /app/data /app/clips && chown node:node /app/data /app/clips
+USER node
+
+# The model is baked in above, so never reach out to Hugging Face at runtime.
+ENV DATA_DIR=/app/data CLIPS_DIR=/app/clips HF_HUB_OFFLINE=1 NODE_ENV=production
 CMD ["node", "src/index.js"]

@@ -19,6 +19,9 @@ MODEL = os.getenv("WHISPER_MODEL", "base.en")
 LANGUAGE = os.getenv("WHISPER_LANGUAGE", "en") or None
 DEVICE = os.getenv("WHISPER_DEVICE", "cpu")
 COMPUTE_TYPE = os.getenv("WHISPER_COMPUTE_TYPE", "int8")
+# The bot sends windows of a few seconds; refuse anything far larger.
+MAX_AUDIO_SECONDS = 30
+MAX_HOTWORDS_CHARS = 2000
 
 
 def emit(obj):
@@ -27,7 +30,13 @@ def emit(obj):
 
 
 def transcribe(model, req):
-    audio = np.frombuffer(base64.b64decode(req["audio"]), dtype=np.int16).astype(np.float32) / 32768.0
+    raw = base64.b64decode(req["audio"], validate=True)
+    if len(raw) > MAX_AUDIO_SECONDS * 16000 * 2:
+        raise ValueError("audio window too long")
+    hotwords = req.get("hotwords") or None
+    if hotwords is not None and (not isinstance(hotwords, str) or len(hotwords) > MAX_HOTWORDS_CHARS):
+        raise ValueError("invalid hotwords")
+    audio = np.frombuffer(raw[: len(raw) // 2 * 2], dtype=np.int16).astype(np.float32) / 32768.0
     segments, _ = model.transcribe(
         audio,
         language=LANGUAGE,
@@ -36,7 +45,7 @@ def transcribe(model, req):
         condition_on_previous_text=False,
         vad_filter=True,
         vad_parameters={"min_silence_duration_ms": 300},
-        hotwords=req.get("hotwords") or None,
+        hotwords=hotwords,
     )
     words = []
     for seg in segments:
