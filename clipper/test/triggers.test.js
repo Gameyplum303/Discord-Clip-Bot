@@ -29,3 +29,21 @@ test('returns the earliest of several triggers', () => {
   const hit = findTrigger(words([' wow', 0.2], [' clip', 1.5]), ['clip', 'wow']);
   assert.equal(hit.trigger, 'wow');
 });
+
+test('fuzzy matching is off by default', () => {
+  assert.equal(findTrigger(words([' clipp', 0.1]), ['clip']), null);
+});
+
+test('fuzzy matching accepts near misses and merged words', () => {
+  assert.equal(findTrigger(words([' bookmarc', 0.1]), ['bookmark'], { fuzzy: true }).trigger, 'bookmark');
+  const merged = findTrigger(words([' wow', 0.1], [' clipthat', 0.6]), ['clip that'], { fuzzy: true });
+  assert.equal(merged.start, 0.6);
+  const split = findTrigger(words([' book', 0.2], [' mark', 0.5]), ['bookmark'], { fuzzy: true });
+  assert.equal(split.start, 0.2);
+});
+
+test('fuzzy matching stays strict for short words and different first letters', () => {
+  assert.equal(findTrigger(words([' cap', 0.1]), ['clp'], { fuzzy: true }), null);
+  assert.equal(findTrigger(words([' slip', 0.1]), ['clip'], { fuzzy: true }), null);
+  assert.equal(findTrigger(words([' clap', 0.1]), ['clip'], { fuzzy: true }).trigger, 'clip');
+});
