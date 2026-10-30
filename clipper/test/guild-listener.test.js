@@ -1,0 +1,84 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { setTimeout as sleep } from 'node:timers/promises';
+import { GuildListener } from '../src/guild-listener.js';
+import { DEFAULTS } from '../src/config-store.js';
+
+const frame = (value) => {
+  const b = Buffer.alloc(960 * 2 * 2);
+  for (let i = 0; i < b.length; i += 2) b.writeInt16LE(value, i);
+  return b;
+};
+
+// Pretends to be Whisper: reports a "clip" word wherever the audio gets loud,
+// so the test checks that word timestamps map back to the right moment.
+const fakeStt = {
+  calls: 0,
+  async transcribe(pcm) {
+    this.calls++;
+    for (let i = 0; i < pcm.length; i += 2) {
+      if (Math.abs(pcm.readInt16LE(i)) > 1000) return [{ word: ' Clip!', start: i / 2 / 16_000, end: i / 2 / 16_000 + 0.1 }];
+    }
+    return [];
+  },
+};
+
+function makeListener(cfg, clips) {
+  const channel = { id: 'text' };
+  return new GuildListener({
+    guild: { id: 'g', name: 'test', members: { cache: new Map() }, channels: { fetch: async () => null } },
+    voiceChannel: { id: 'voice' },
+    fallbackTextChannel: channel,
+    config: () => ({ ...DEFAULTS, ...cfg }),
+    stt: fakeStt,
+    saveClip: async (clip) => clips.push(clip),
+    log: {},
+  });
+}
+
+test('clips audio centred on the trigger word, before and after', async () => {
+  const clips = [];
+  const listener = makeListener({ triggers: ['clip'], beforeSec: 1, afterSec: 1 }, clips);
+  const sub = { windowStartMs: null, carry: false };
+
+  // 1.5 s of speech where 200 ms in the middle is the "trigger word".
+  for (let i = 0; i < 75; i++) {
+    listener.onPcm('u1', sub, frame(i >= 30 && i < 40 ? 8000 : 200));
+    await sleep(20);
+  }
+  listener.flush('u1', sub, performance.now(), false);
+  await sleep(2000);
+
+  assert.equal(clips.length, 1);
+  const { pcm, hit, userId, channel } = clips[0];
+  assert.equal(hit.trigger, 'clip');
+  assert.equal(userId, 'u1');
+  assert.equal(channel.id, 'text');
+  assert.equal(pcm.length, 2 * 48_000 * 4);
+
+  // The loud part should start right at the 1 s mark of the 2 s clip.
+  let firstLoud = -1;
+  for (let i = 0; i < pcm.length; i += 4) {
+    if (pcm.readInt16LE(i) > 1000) { firstLoud = i / 4 / 48; break; }
+  }
+  assert.ok(Math.abs(firstLoud - 1000) < 30, `trigger landed at ${firstLoud} ms`);
+  listener.destroy();
+});
+
+test('respects the cooldown and skips work with no triggers', async () => {
+  const clips = [];
+  const listener = makeListener({ triggers: [], beforeSec: 1, afterSec: 0 }, clips);
+  const sub = { windowStartMs: null, carry: false };
+  const before = fakeStt.calls;
+  listener.onPcm('u1', sub, frame(8000));
+  listener.flush('u1', sub, performance.now(), false);
+  assert.equal(fakeStt.calls, before, 'no STT call without triggers');
+
+  const listener2 = makeListener({ triggers: ['clip'], beforeSec: 1, afterSec: 0, cooldownSec: 60 }, clips);
+  listener2.onWords('u1', performance.now() - 5000, [{ word: 'clip', start: 0, end: 0.2 }]);
+  listener2.onWords('u1', performance.now(), [{ word: 'clip', start: 0, end: 0.2 }]);
+  await sleep(700);
+  assert.equal(clips.length, 1);
+  listener.destroy();
+  listener2.destroy();
+});

@@ -1,6 +1,16 @@
-version: '3.8'
 services:
+  # Voice clipping bot (Node.js + local Whisper). `docker compose up -d --build`
+  clipper:
+    build: ./clipper
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ./data:/app/data   # per-server settings (trigger words, output channel)
+      - ./clips:/app/clips # a copy of every MP3 clip
+
+  # Original Proxmox management bot. Only starts with `docker compose --profile proxmox up`.
   bot:
+    profiles: ["proxmox"]
     build: .
     user: ${UID}:${GID}
     restart: unless-stopped
