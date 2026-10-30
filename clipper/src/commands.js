@@ -90,6 +90,8 @@ export const commandDefinitions = [
     ),
 ].map((c) => c.toJSON());
 
+const canJoin = (perms) =>
+  Boolean(perms?.has(PermissionFlagsBits.ViewChannel) && perms.has(PermissionFlagsBits.Connect));
 const ephemeral = (content) => ({ content, flags: MessageFlags.Ephemeral });
 const fmtTriggers = (t) => (t.length ? t.map((w) => `\`${w}\``).join(', ') : '_none yet: add one with `/clipconfig trigger add`_');
 
@@ -100,20 +102,28 @@ export function createCommandHandler({ store, listeners, startListening }) {
     const cfg = store.get(guild.id);
 
     if (sub === 'join') {
-      const channel =
-        interaction.options.getChannel('channel') ??
-        (await guild.members.fetch(interaction.user.id)).voice.channel;
+      const member = await guild.members.fetch(interaction.user.id);
+      const channel = interaction.options.getChannel('channel') ?? member.voice.channel;
       if (!channel) return interaction.reply(ephemeral('Join a voice channel first, or pick one with the `channel` option.'));
-      const me = guild.members.me;
-      const perms = channel.permissionsFor(me);
-      if (!perms?.has(PermissionFlagsBits.Connect) || !perms.has(PermissionFlagsBits.ViewChannel)) {
+      // Only record channels the person asking could join and listen to themselves,
+      // so nobody can use the bot to listen in on a private channel.
+      if (!canJoin(channel.permissionsFor(member))) {
+        return interaction.reply(ephemeral(`You need access to ${channel} to start clipping there.`));
+      }
+      if (!canJoin(channel.permissionsFor(guild.members.me))) {
         return interaction.reply(ephemeral(`I don't have permission to join ${channel}.`));
+      }
+      // Moving the bot out of a call someone else started needs the same access to that call.
+      const current = listeners.get(guild.id);
+      if (current && current.voiceChannel.id !== channel.id && !canJoin(current.voiceChannel.permissionsFor(member))) {
+        return interaction.reply(ephemeral("I'm already clipping another channel you don't have access to."));
       }
       await interaction.deferReply();
       try {
         await startListening(guild, channel, interaction.channel);
       } catch (err) {
-        return interaction.editReply(`Couldn't join ${channel}: ${err.message}`);
+        console.error(`Failed to join voice channel ${channel.id} in ${guild.id}:`, err);
+        return interaction.editReply(`Couldn't join ${channel}. Check my permissions and try again.`);
       }
       const where = cfg.channelId ? `<#${cfg.channelId}>` : `${interaction.channel} (set one with \`/clipconfig channel\`)`;
       return interaction.editReply(
@@ -124,6 +134,10 @@ export function createCommandHandler({ store, listeners, startListening }) {
     if (sub === 'leave') {
       const listener = listeners.get(guild.id);
       if (!listener) return interaction.reply(ephemeral("I'm not in a voice channel."));
+      const member = await guild.members.fetch(interaction.user.id);
+      if (!canJoin(listener.voiceChannel.permissionsFor(member))) {
+        return interaction.reply(ephemeral("You need access to the channel I'm in to stop me."));
+      }
       listener.destroy();
       return interaction.reply('👋 Stopped listening.');
     }
@@ -131,10 +145,12 @@ export function createCommandHandler({ store, listeners, startListening }) {
     if (sub === 'status') {
       const listener = listeners.get(guild.id);
       const s = listener?.status();
+      const member = await guild.members.fetch(interaction.user.id);
+      const visible = s && s.channel.permissionsFor(member)?.has(PermissionFlagsBits.ViewChannel);
       return interaction.reply(
         ephemeral(
           [
-            `**Voice channel:** ${s ? `${s.channel}${s.onCooldown ? ' (cooling down)' : ''}` : 'not connected'}`,
+            `**Voice channel:** ${s ? `${visible ? s.channel : 'a channel you can\'t see'}${s.onCooldown ? ' (cooling down)' : ''}` : 'not connected'}`,
             `**Trigger words:** ${fmtTriggers(cfg.triggers)}`,
             `**Clips go to:** ${cfg.channelId ? `<#${cfg.channelId}>` : 'the channel `/clip join` was used in'}`,
             `**Clip length:** ${cfg.beforeSec}s before + ${cfg.afterSec}s after`,

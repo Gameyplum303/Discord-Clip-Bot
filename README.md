@@ -36,7 +36,7 @@ cp .env.example .env
 |---|---|---|
 | `DISCORD_BOT_TOKEN` | yes | The bot token from step 1 |
 | `COMMAND_GUILD_ID` | no | A server ID to register commands in instantly while testing. Leave empty to register them everywhere. |
-| `WHISPER_MODEL` | no | `tiny.en`, `base.en` (default), `small.en` or `medium.en`. Bigger is more accurate but needs more CPU. Use a model without `.en` (e.g. `base`) and set `WHISPER_LANGUAGE` for other languages. |
+| `WHISPER_MODEL` | no | `tiny.en`, `base.en` (default), `small.en` or `medium.en`. Bigger is more accurate but needs more CPU. With Docker, rebuild after changing it. Use a model without `.en` (e.g. `base`) and set `WHISPER_LANGUAGE` for other languages. |
 | `WHISPER_LANGUAGE` | no | Language code, default `en` |
 
 ### 3. Run with Docker (recommended)
@@ -46,7 +46,9 @@ docker compose up -d --build
 docker compose logs -f clipper
 ```
 
-The image includes ffmpeg, Python and the Whisper model. Settings are saved to `./data/` and clips to `./clips/`.
+The image includes ffmpeg, Python and the Whisper model. Settings and a copy of each clip are kept in Docker volumes (`clipper-data`, `clipper-clips`). To copy the saved clips out: `docker compose cp clipper:/app/clips ./clips`.
+
+To use a different Whisper model, set `WHISPER_MODEL` in `.env` and rebuild with `docker compose up -d --build`. The model is baked into the image and the container never downloads anything at runtime.
 
 ### Or run without Docker
 
@@ -98,8 +100,18 @@ Now when anyone in the call says "clip that" or "no way", a 20-second MP3 shows 
 - **Pick distinctive triggers.** Whisper sometimes mishears short or uncommon words. Words that sound unique ("clip that", "bookmark") work better than very short ones. If a word isn't being picked up, try `WHISPER_MODEL=small.en`.
 - **CPU.** `base.en` handles a few people talking at once on a normal desktop CPU. If transcription can't keep up, the bot drops audio windows rather than falling behind and logs a warning.
 - **The bot leaves on its own** when everyone else leaves the voice channel.
-- **Let people know.** The bot is recording the voice channel while it is in it. Only the clips are saved; the rolling buffer lives in memory.
 - **Why Node.js?** Discord now encrypts voice end to end (the DAVE protocol). [`@discordjs/voice`](https://discord.js.org/docs/packages/voice/main) can decrypt received audio, while py-cord's voice receive currently can't, so the clipper is written in Node with a small Python process for Whisper.
+
+## Security and privacy
+
+- **Keep the token secret.** It lives only in `.env`, which is git-ignored. If it ever leaks, reset it in the Developer Portal straight away.
+- **Nobody can listen in through the bot.** `/clip join` only works for channels the person running it can see and connect to. `/clip leave` and moving the bot need the same access to the channel it's in, and `/clip status` won't name a channel you can't see.
+- **Only admins change settings.** `/clipconfig` needs Manage Server by default. Clips from a private voice channel go wherever the clips channel is, so choose one only the right people can read.
+- **Audio stays local.** Speech recognition runs in the container, and the rolling buffer is in memory only and is dropped after 60 seconds. Only triggered clips are saved and posted.
+- **Tell people they're being recorded.** The bot shows up in the call while it's listening. Make sure everyone in the channel knows it's there and agrees, as recording laws differ by place.
+- **The container runs with least privilege.** It runs as a non-root user with a read-only filesystem, all Linux capabilities dropped, `no-new-privileges`, and memory and process limits. It opens no ports.
+- **Minimal Discord permissions.** The bot uses no privileged intents and gets only View Channels, Connect, Send Messages and Attach Files. Clip messages never ping anyone.
+- **Dependencies are pinned.** npm packages are locked in `package-lock.json` and installed with `npm ci --ignore-scripts`. Check them with `npm audit` (in `clipper/`) and `pip-audit -r clipper/stt/requirements.txt`.
 
 ## Development
 

@@ -1,12 +1,23 @@
 services:
   # Voice clipping bot (Node.js + local Whisper). `docker compose up -d --build`
   clipper:
-    build: ./clipper
+    build:
+      context: ./clipper
+      args:
+        WHISPER_MODEL: ${WHISPER_MODEL:-base.en}
     restart: unless-stopped
     env_file: .env
+    # Least privilege: no root, no extra kernel capabilities, read-only filesystem.
+    user: node
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: [/tmp]
+    mem_limit: 2g
+    pids_limit: 256
     volumes:
-      - ./data:/app/data   # per-server settings (trigger words, output channel)
-      - ./clips:/app/clips # a copy of every MP3 clip
+      - clipper-data:/app/data   # per-server settings (trigger words, output channel)
+      - clipper-clips:/app/clips # a copy of every MP3 clip
 
   # Original Proxmox management bot. Only starts with `docker compose --profile proxmox up`.
   bot:
@@ -19,3 +30,7 @@ services:
     volumes:
       - ./src:/app
       - ./clips:/app/clips
+
+volumes:
+  clipper-data:
+  clipper-clips:
