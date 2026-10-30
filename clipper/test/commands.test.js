@@ -121,3 +121,108 @@ test('replies never ping anyone', async () => {
   });
   assert.deepEqual(replies[0].allowedMentions, { parse: [] });
 });
+
+// Runs a /clipconfig command against an in-memory store.
+async function runConfig(saved, { group = null, sub, options = {} }, { library = null, listeners = new Map() } = {}) {
+  const handler = createCommandHandler({
+    store: { get: () => ({ ...saved }), update: (_g, c) => Object.assign(saved, c) },
+    listeners,
+    startListening: async () => {},
+    library,
+  });
+  const replies = [];
+  const me = { id: 'bot' };
+  await handler({
+    inGuild: () => true,
+    isAutocomplete: () => false,
+    isChatInputCommand: () => true,
+    commandName: 'clipconfig',
+    guild: { id: 'g', members: { me } },
+    user: { id: 'admin' },
+    options: {
+      getSubcommandGroup: () => group,
+      getSubcommand: () => sub,
+      getString: (k) => options[k] ?? null,
+      getChannel: (k) => options[k] ?? null,
+      getInteger: (k) => options[k] ?? null,
+      getBoolean: (k) => options[k] ?? null,
+    },
+    reply: async (r) => replies.push(r.content ?? r),
+  });
+  return replies.join('\n');
+}
+
+const textChannel = (id) => ({ id, toString: () => `<#${id}>`, permissionsFor: () => perms(Object.values(PermissionFlagsBits)) });
+
+test('new settings are all off by default', () => {
+  assert.equal(DEFAULTS.autoJoinChannelId, null);
+  assert.equal(DEFAULTS.detailedPosts, false);
+  assert.equal(DEFAULTS.sound, false);
+  assert.equal(DEFAULTS.fuzzy, false);
+  assert.deepEqual(DEFAULTS.triggerChannels, {});
+  assert.equal(DEFAULTS.maxClips, 0);
+  assert.equal(DEFAULTS.maxDays, 0);
+});
+
+test('per-trigger channel is set, cleared, and dropped with its trigger', async () => {
+  const saved = { ...DEFAULTS, triggers: ['clip', 'wow'] };
+  await runConfig(saved, { group: 'trigger', sub: 'channel', options: { phrase: 'Wow!', channel: textChannel('c1') } });
+  assert.deepEqual(saved.triggerChannels, { wow: 'c1' });
+  assert.match(await runConfig(saved, { group: 'trigger', sub: 'channel', options: { phrase: 'nope', channel: textChannel('c1') } }), /isn't a trigger/);
+  await runConfig(saved, { group: 'trigger', sub: 'remove', options: { phrase: 'wow' } });
+  assert.deepEqual(saved.triggerChannels, {});
+  assert.deepEqual(saved.triggers, ['clip']);
+});
+
+test('toggles update settings and the live call', async () => {
+  const saved = { ...DEFAULTS };
+  const soundCalls = [];
+  const listeners = new Map([['g', { setSound: (on) => soundCalls.push(on) }]]);
+  await runConfig(saved, { sub: 'sound', options: { enabled: true } }, { listeners });
+  await runConfig(saved, { sub: 'fuzzy', options: { enabled: true } });
+  await runConfig(saved, { sub: 'posts', options: { style: 'detailed' } });
+  await runConfig(saved, { sub: 'storage', options: { max_clips: 50, max_days: 7 } });
+  await runConfig(saved, { sub: 'autojoin', options: { channel: voiceChannel('vc', { bot: ALL }) } });
+  assert.deepEqual(soundCalls, [true]);
+  assert.equal(saved.fuzzy, true);
+  assert.equal(saved.detailedPosts, true);
+  assert.equal(saved.maxClips, 50);
+  assert.equal(saved.maxDays, 7);
+  assert.equal(saved.autoJoinChannelId, 'vc');
+  await runConfig(saved, { sub: 'autojoin', options: {} });
+  assert.equal(saved.autoJoinChannelId, null);
+});
+
+test('/clip list and /clip get hide clips from calls the user cannot access', async () => {
+  const clips = [
+    { id: 'aaaaaaaa', guildId: 'g', voiceChannelId: 'open', userId: 'x', createdAt: 2, file: 'a.mp3' },
+    { id: 'bbbbbbbb', guildId: 'g', voiceChannelId: 'secret', userId: 'x', createdAt: 1, file: 'b.mp3' },
+  ];
+  const library = {
+    list: () => clips,
+    get: (_g, id) => clips.find((c) => c.id === id) ?? null,
+    read: () => Buffer.from('mp3'),
+  };
+  const chans = new Map([
+    ['open', voiceChannel('open', { user: ALL })],
+    ['secret', voiceChannel('secret', { user: [] })],
+  ]);
+  const handler = createCommandHandler({ store: { get: () => ({ ...DEFAULTS }) }, listeners: new Map(), startListening: async () => {}, library });
+  const ask = async (sub, opts = {}) => {
+    const replies = [];
+    await handler({
+      inGuild: () => true, isAutocomplete: () => false, isChatInputCommand: () => true, commandName: 'clip',
+      guild: { id: 'g', channels: { cache: chans }, members: { me: { id: 'bot' }, fetch: async () => ({ id: 'user', voice: {} }) } },
+      user: { id: 'user' }, channel: { id: 't' },
+      options: { getSubcommand: () => sub, getInteger: () => null, getString: (k) => opts[k] },
+      reply: async (r) => replies.push(r),
+    });
+    return replies[0];
+  };
+  const list = await ask('list');
+  assert.match(list.content, /aaaaaaaa/);
+  assert.doesNotMatch(list.content, /bbbbbbbb/);
+  assert.equal((await ask('get', { id: 'aaaaaaaa' })).files.length, 1);
+  assert.match((await ask('get', { id: 'bbbbbbbb' })).content, /No clip/);
+  assert.match((await ask('get', { id: '../../xx' })).content, /No clip/);
+});

@@ -121,3 +121,27 @@ test('opted-out people are not recorded and their audio is dropped', () => {
   assert.equal(listener.timeline.speakers.has('u2'), false);
   listener.destroy();
 });
+
+test('per-trigger channels win over the normal clips channel', async () => {
+  const clips = [];
+  const listener = makeListener({ triggers: ['clip', 'wow'], beforeSec: 1, afterSec: 0, cooldownSec: 0, channelId: 'main', triggerChannels: { wow: 'wowchan' } }, clips);
+  listener.guild.channels.fetch = async (id) => ({ id });
+  listener.onWords('u1', performance.now() - 2000, [{ word: 'wow', start: 0, end: 0.2 }]);
+  listener.onWords('u1', performance.now(), [{ word: 'clip', start: 0, end: 0.2 }]);
+  await sleep(1000);
+  assert.deepEqual(clips.map((c) => c.channel.id).sort(), ['main', 'wowchan']);
+  assert.equal(clips.find((c) => c.channel.id === 'wowchan').hit.transcript, 'wow');
+  listener.destroy();
+});
+
+test('fuzzy matching only applies when turned on', async () => {
+  const clips = [];
+  const strict = makeListener({ triggers: ['bookmark'], beforeSec: 1, afterSec: 0 }, clips);
+  strict.onWords('u1', performance.now(), [{ word: 'bookmarc', start: 0, end: 0.2 }]);
+  const fuzzy = makeListener({ triggers: ['bookmark'], beforeSec: 1, afterSec: 0, fuzzy: true }, clips);
+  fuzzy.onWords('u1', performance.now(), [{ word: 'bookmarc', start: 0, end: 0.2 }]);
+  await sleep(700);
+  assert.equal(clips.length, 1);
+  strict.destroy();
+  fuzzy.destroy();
+});
