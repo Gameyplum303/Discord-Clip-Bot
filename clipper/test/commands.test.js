@@ -10,15 +10,25 @@ const perms = (granted) => ({ has: (p) => granted.includes(p) });
 // A voice channel where `access` maps member ids to the permissions they hold.
 const voiceChannel = (id, access) => ({ id, toString: () => `<#${id}>`, permissionsFor: (m) => perms(access[m.id] ?? []) });
 
-function setup({ access, listening = null }) {
+function setup({ access, listening = null, inChannel = null, cfg = {} }) {
   const me = { id: 'bot' };
-  const member = { id: 'user', voice: { channel: null } };
+  const member = { id: 'user', voice: { channel: null, channelId: inChannel } };
   const guild = { id: 'g', members: { me, fetch: async () => member } };
   const listeners = new Map();
-  if (listening) listeners.set('g', { voiceChannel: listening, destroy() { this.destroyed = true; }, status: () => ({ channel: listening }) });
+  const calls = [];
+  if (listening) {
+    listeners.set('g', {
+      voiceChannel: listening,
+      destroy() { this.destroyed = true; },
+      status: () => ({ channel: listening }),
+      clipNow: (id) => { calls.push(['now', id]); return true; },
+      forgetUser: (id) => calls.push(['forget', id]),
+    });
+  }
+  const saved = { ...DEFAULTS, ...cfg };
   const joined = [];
   const handler = createCommandHandler({
-    store: { get: () => ({ ...DEFAULTS }) },
+    store: { get: () => ({ ...saved }), update: (_g, c) => Object.assign(saved, c) },
     listeners,
     startListening: async (_g, ch) => joined.push(ch.id),
   });
@@ -39,7 +49,7 @@ function setup({ access, listening = null }) {
     });
     return replies.map((r) => (typeof r === 'string' ? r : r.content)).join('\n');
   };
-  return { run, joined, listeners };
+  return { run, joined, listeners, calls, saved, handler };
 }
 
 test('refuses to join a channel the user cannot access', async () => {
@@ -73,4 +83,41 @@ test('leave and status respect channel access', async () => {
   const status = await run('status');
   assert.match(status, /a channel you can't see/);
   assert.doesNotMatch(status, /secret/);
+});
+
+test('/clip now only works for people in the call', async () => {
+  const lounge = voiceChannel('lounge', { bot: ALL, user: ALL });
+  const outside = setup({ access: {}, listening: lounge, inChannel: null });
+  assert.match(await outside.run('now'), /Join/);
+  assert.deepEqual(outside.calls, []);
+
+  const inside = setup({ access: {}, listening: lounge, inChannel: 'lounge' });
+  assert.match(await inside.run('now'), /Saving the last 20s/);
+  assert.deepEqual(inside.calls, [['now', 'user']]);
+});
+
+test('/clip optout stores the choice and drops buffered audio; optin undoes it', async () => {
+  const lounge = voiceChannel('lounge', { bot: ALL, user: ALL });
+  const { run, calls, saved } = setup({ access: {}, listening: lounge });
+  await run('optout');
+  assert.deepEqual(saved.optedOut, ['user']);
+  assert.deepEqual(calls, [['forget', 'user']]);
+  await run('optout');
+  assert.deepEqual(saved.optedOut, ['user'], 'no duplicates');
+  await run('optin');
+  assert.deepEqual(saved.optedOut, []);
+});
+
+test('replies never ping anyone', async () => {
+  const lounge = voiceChannel('lounge', { bot: ALL, user: ALL });
+  const { handler } = setup({ access: {}, listening: lounge });
+  const replies = [];
+  await handler({
+    inGuild: () => true, isAutocomplete: () => false, isChatInputCommand: () => true,
+    commandName: 'clip', guild: { id: 'g', members: { me: { id: 'bot' }, fetch: async () => ({ id: 'user', voice: {} }) } },
+    user: { id: 'user' }, channel: { id: 'text' },
+    options: { getSubcommand: () => 'status', getChannel: () => null },
+    reply: async (r) => replies.push(r),
+  });
+  assert.deepEqual(replies[0].allowedMentions, { parse: [] });
 });

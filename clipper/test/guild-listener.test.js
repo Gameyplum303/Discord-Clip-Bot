@@ -82,3 +82,42 @@ test('respects the cooldown and skips work with no triggers', async () => {
   listener.destroy();
   listener2.destroy();
 });
+
+test('/clip now posts the last before+after seconds, rate-limited per person', async () => {
+  const clips = [];
+  const listener = makeListener({ beforeSec: 1, afterSec: 1 }, clips);
+  assert.equal(listener.clipNow('u1'), true);
+  assert.equal(listener.clipNow('u1'), false);
+  assert.equal(listener.clipNow('u2'), true);
+  await sleep(50);
+  assert.equal(clips.length, 2);
+  assert.equal(clips[0].hit, null);
+  assert.equal(clips[0].pcm.length, 2 * 48_000 * 4);
+  listener.destroy();
+});
+
+test('/clip test reports what was heard even with no triggers set', async () => {
+  const listener = makeListener({ triggers: [] }, []);
+  const sub = { windowStartMs: null, carry: false };
+  const result = listener.runTest('u1', 300);
+  for (let i = 0; i < 10; i++) {
+    listener.onPcm('u1', sub, frame(8000));
+    await sleep(20);
+  }
+  listener.flush('u1', sub, performance.now(), false);
+  const heard = await result;
+  assert.deepEqual(heard, [{ text: 'Clip!', trigger: null }]);
+  listener.destroy();
+});
+
+test('opted-out people are not recorded and their audio is dropped', () => {
+  const listener = makeListener({ optedOut: ['u1'] }, []);
+  listener.connection = { receiver: { subscribe: () => assert.fail('should not subscribe') }, state: { status: 'destroyed' } };
+  listener.subscribe('u1');
+  assert.equal(listener.subscriptions.size, 0);
+
+  listener.timeline.push('u2', frame(100), performance.now());
+  listener.forgetUser('u2');
+  assert.equal(listener.timeline.speakers.has('u2'), false);
+  listener.destroy();
+});

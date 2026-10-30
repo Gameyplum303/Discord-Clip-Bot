@@ -25,14 +25,16 @@ const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBit
 async function saveClip({ pcm, hit, userId, channel, cfg }) {
   const mp3 = await encodeMp3(pcm);
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-  const name = `clip-${hit.trigger.replace(/\s+/g, '-')}-${stamp}.mp3`;
+  const name = `clip-${hit ? hit.trigger.replace(/\s+/g, '-') : 'manual'}-${stamp}.mp3`;
 
   if (clipsDir) {
     await fs.mkdir(clipsDir, { recursive: true });
     await fs.writeFile(path.join(clipsDir, name), mp3);
   }
   await channel.send({
-    content: `🎬 <@${userId}> said **${hit.trigger}**: ${cfg.beforeSec}s before and ${cfg.afterSec}s after.`,
+    content: hit
+      ? `🎬 <@${userId}> said **${hit.trigger}**: ${cfg.beforeSec}s before and ${cfg.afterSec}s after.`
+      : `🎬 <@${userId}> clipped the last ${cfg.beforeSec + cfg.afterSec}s.`,
     files: [new AttachmentBuilder(mp3, { name })],
     allowedMentions: { parse: [] },
   });

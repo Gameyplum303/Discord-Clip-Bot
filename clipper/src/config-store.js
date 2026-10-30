@@ -7,6 +7,7 @@ export const DEFAULTS = Object.freeze({
   cooldownSec: 15,
   beforeSec: 10,
   afterSec: 10,
+  optedOut: [], // user ids whose voice is never recorded
 });
 
 // Per-server settings, saved to a JSON file so they survive restarts.
