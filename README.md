@@ -4,6 +4,8 @@
 
 A Discord bot that integrates with Proxmox Virtual Environment (PVE) for managing VMs through Discord commands, and passively listens in voice channels to automatically clip audio when trigger words are detected.
 
+Built on earlier open-source work by seanofthewired and Brian Royer. See [Credits](#credits).
+
 ![Discord Proxmox Bot](https://i.imgur.com/VjCRZEG.png "Discord Proxmox Bot")
 
 ## Prerequisites
@@ -96,7 +98,7 @@ All commands are prefixed with `!` and restricted to the configured admin user.
 
 ## Voice Clipping
 
-The bot can passively listen in a Discord voice channel and automatically clip the last 30 seconds of audio whenever a configured trigger word is spoken. The clip is saved to disk and posted to a Discord text channel. After each clip, the bot also announces **"Slur has been Clipped"** aloud in the voice channel using text-to-speech.
+The bot can passively listen in a Discord voice channel and automatically clip the last 30 seconds of audio whenever a configured trigger word is spoken. The clip is saved to disk and posted to a Discord text channel. After each clip, the bot also announces the clip aloud in the voice channel using text-to-speech.
 
 ### How it works
 
@@ -105,7 +107,7 @@ The bot can passively listen in a Discord voice channel and automatically clip t
 3. When any trigger word appears in a transcription, the bot:
    - Saves the last 30 seconds as a WAV file to `./clips/`
    - Posts the WAV to the configured clips channel (or the join channel if none is set)
-   - Speaks "Slur has been Clipped" in the VC via gTTS
+   - Announces the clip in the VC via gTTS
    - Starts a cooldown period (default 30 s) before the next trigger can fire
 
 ### Voice Commands
@@ -125,14 +127,13 @@ The bot can passively listen in a Discord voice channel and automatically clip t
 ### Example setup
 
 ```
-!voice trigger add poggers
-!voice trigger add slur
 !voice trigger add clip
+!voice trigger add highlight
 !voice clipschannel #clips
 !voice join
 ```
 
-After this, whenever anyone in the VC says "poggers", "slur", or "clip", the bot clips the last 30 seconds and sends it to `#clips`.
+After this, whenever anyone in the VC says "clip" or "highlight", the bot clips the last 30 seconds and sends it to `#clips`.
 
 ### Notes
 
@@ -154,3 +155,13 @@ make logs       # tail container logs
 ```
 
 New commands can be added to `src/bot/commands.py` using the `@command` decorator. Voice commands are handled separately in `src/bot/voice_commands.py` since they require async operations.
+
+---
+
+## Credits
+
+- [ProxmoxBot](https://github.com/seanofthewired/ProxmoxBot) by seanofthewired: the original bot (2023).
+- [proxmox-bot](https://github.com/shyce/proxmox-bot) by Brian Royer: refactored command system, Docker setup and test suite (2024).
+- Voice clipping (`src/bot/voice_*.py`) by Jared Rogers (2026).
+
+Licensed under the GNU General Public License v3.0. See [COPYING](COPYING).
