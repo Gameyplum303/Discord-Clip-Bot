@@ -3,4 +3,6 @@
 **.pytest_cache**
 **.coverage**
 **prompt**
-htmlcov
+htmlcovdata/
+clips/
+node_modules/

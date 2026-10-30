@@ -1,51 +1,138 @@
-# Discord Proxmox Bot
+# Discord Clip Bot
 
-## Overview
+A Discord bot that sits in a voice channel, listens for trigger words you choose, and when someone says one it posts an MP3 of the **10 seconds before and 10 seconds after** the word to a text channel you pick.
 
-A Discord bot that integrates with Proxmox Virtual Environment (PVE) for managing VMs through Discord commands, and passively listens in voice channels to automatically clip audio when trigger words are detected.
+Speech recognition runs locally with [faster-whisper](https://github.com/SYSTRAN/faster-whisper), so voice audio never leaves your machine.
 
-![Discord Proxmox Bot](https://i.imgur.com/VjCRZEG.png "Discord Proxmox Bot")
+## How it works
 
-## Prerequisites
+1. `/clip join` connects the bot to your voice channel. It keeps the last 60 seconds of everyone's audio in memory.
+2. Each speaker's audio is transcribed in short windows (about every 5 seconds, or as soon as they stop talking). Whisper is given your trigger words as hints, and returns a timestamp for every word.
+3. When a trigger word shows up, the bot waits until 10 seconds after the moment it was said, then mixes all speakers from 10 s before to 10 s after into one MP3.
+4. The MP3 is posted to your clips channel (and a copy is saved to `./clips/`). A cooldown (15 s by default) stops one moment turning into a pile of clips.
 
-- Docker and Docker Compose installed
-- Proxmox VE API access
-- Discord Bot Token
-- Admin Discord User ID
+## Setup
 
-## Configuration
+### 1. Create the Discord bot
 
-### 1. Docker Compose Setup
+1. Go to the [Discord Developer Portal](https://discord.com/developers/applications), click **New Application**, and give it a name.
+2. Open **Bot**, click **Reset Token**, and copy the token. You'll put it in `.env`.
+3. No privileged intents are needed: the bot only uses slash commands and voice.
+4. Invite it to your server with this link, replacing `YOUR_APPLICATION_ID` (from **General Information**):
 
-Use the provided `compose.yml` to containerize and run the bot. It sets up environment variables, volume bindings for source code, and a `clips/` directory for saved audio clips.
+   ```
+   https://discord.com/oauth2/authorize?client_id=YOUR_APPLICATION_ID&scope=bot+applications.commands&permissions=1083392
+   ```
 
-### 2. Environment Variables
+   That grants **View Channels**, **Connect**, **Send Messages** and **Attach Files**. Make sure the bot can also see and post in the channel you choose for clips.
 
-Copy `.env.example` to `.env` and fill in the values:
-
-| Variable | Description |
-|---|---|
-| `PROXMOX_URL` | URL of your Proxmox VE instance (e.g. `pve.home.arpa`) |
-| `PROXMOX_USER` | Proxmox login username (typically `root@pam`) |
-| `PROXMOX_PASS` | Proxmox login password |
-| `DISCORD_BOT_TOKEN` | Your Discord Bot Token |
-| `ADMIN_DISCORD_USER_ID` | Discord User ID of the bot admin |
-
-## Running the Bot
+### 2. Configure
 
 ```sh
-docker compose up --build
+cp .env.example .env
 ```
 
-The bot will automatically restart unless stopped manually. Audio clips are persisted to `./clips/` on the host.
+| Variable | Required | Description |
+|---|---|---|
+| `DISCORD_BOT_TOKEN` | yes | The bot token from step 1 |
+| `COMMAND_GUILD_ID` | no | A server ID to register commands in instantly while testing. Leave empty to register them everywhere. |
+| `WHISPER_MODEL` | no | `tiny.en`, `base.en` (default), `small.en` or `medium.en`. Bigger is more accurate but needs more CPU. Use a model without `.en` (e.g. `base`) and set `WHISPER_LANGUAGE` for other languages. |
+| `WHISPER_LANGUAGE` | no | Language code, default `en` |
+
+### 3. Run with Docker (recommended)
+
+```sh
+docker compose up -d --build
+docker compose logs -f clipper
+```
+
+The image includes ffmpeg, Python and the Whisper model. Settings are saved to `./data/` and clips to `./clips/`.
+
+### Or run without Docker
+
+You need Node.js 22.12+, Python 3.9+ and [ffmpeg](https://ffmpeg.org/download.html) on your `PATH`.
+
+```sh
+cd clipper
+npm install
+python3 -m venv .venv && .venv/bin/pip install -r stt/requirements.txt
+export DISCORD_BOT_TOKEN=...            # or load your .env
+export PYTHON_PATH=$PWD/.venv/bin/python
+npm start
+```
+
+The Whisper model downloads on first start.
+
+## Commands
+
+Anyone can use `/clip`. `/clipconfig` needs the **Manage Server** permission by default; you can change who can use it under **Server Settings → Integrations**.
+
+| Command | What it does |
+|---|---|
+| `/clip join [channel]` | Join your voice channel (or the one you pick) and start listening |
+| `/clip leave` | Stop listening and leave |
+| `/clip status` | Show the trigger words, clips channel, clip length and cooldown |
+| `/clipconfig trigger add <phrase>` | Add a trigger word or short phrase (up to 4 words), e.g. `clip it` |
+| `/clipconfig trigger remove <phrase>` | Remove a trigger |
+| `/clipconfig trigger list` | List triggers |
+| `/clipconfig trigger clear` | Remove all triggers |
+| `/clipconfig channel <#channel>` | Text channel the MP3s are posted to. If unset, clips go to the channel `/clip join` was used in. |
+| `/clipconfig cooldown <seconds>` | Minimum gap between clips (default 15) |
+| `/clipconfig length <before> <after>` | Seconds kept before and after the word (default 10 and 10, up to 30 each) |
+
+Settings are stored per server, so the bot can be used in several servers at once.
+
+### Example
+
+```
+/clipconfig trigger add clip that
+/clipconfig trigger add no way
+/clipconfig channel #clips
+/clip join
+```
+
+Now when anyone in the call says "clip that" or "no way", a 20-second MP3 shows up in `#clips`.
+
+## Notes and tips
+
+- **Pick distinctive triggers.** Whisper sometimes mishears short or uncommon words. Words that sound unique ("clip that", "bookmark") work better than very short ones. If a word isn't being picked up, try `WHISPER_MODEL=small.en`.
+- **CPU.** `base.en` handles a few people talking at once on a normal desktop CPU. If transcription can't keep up, the bot drops audio windows rather than falling behind and logs a warning.
+- **The bot leaves on its own** when everyone else leaves the voice channel.
+- **Let people know.** The bot is recording the voice channel while it is in it. Only the clips are saved; the rolling buffer lives in memory.
+- **Why Node.js?** Discord now encrypts voice end to end (the DAVE protocol). [`@discordjs/voice`](https://discord.js.org/docs/packages/voice/main) can decrypt received audio, while py-cord's voice receive currently can't, so the clipper is written in Node with a small Python process for Whisper.
+
+## Development
+
+```sh
+cd clipper
+npm test
+```
+
+Code layout (`clipper/src`):
+
+- `audio-timeline.js`: rolling per-speaker audio buffer, mixes a time range into one track
+- `guild-listener.js`: voice connection, speech-recognition windows, trigger handling
+- `triggers.js`: trigger normalisation and matching against Whisper word timestamps
+- `stt-client.js` + `stt/worker.py`: the Whisper worker process
+- `commands.js`: slash commands; `config-store.js`: per-server settings
 
 ---
 
-## Proxmox Commands
+## Optional: Proxmox bot
+
+This repo started as a Discord bot for managing [Proxmox VE](https://www.proxmox.com/) VMs. That bot is still in `src/` and starts only if you ask for it:
+
+```sh
+docker compose --profile proxmox up -d --build
+```
+
+It needs `PROXMOX_URL`, `PROXMOX_USER`, `PROXMOX_PASS` and `ADMIN_DISCORD_USER_ID` in `.env`, and the **Message Content** intent enabled for the bot. Its older `!voice` clipping commands are superseded by the clipper above; don't use both in the same voice channel.
+
+### Proxmox commands
 
 All commands are prefixed with `!` and restricted to the configured admin user.
 
-### VM Management
+#### VM Management
 
 | Command | Description |
 |---|---|
@@ -67,7 +154,7 @@ All commands are prefixed with `!` and restricted to the configured admin user.
 | `!vms start_all <node>` | Start all VMs on a node |
 | `!vms stop_all <node>` | Stop all VMs on a node |
 
-### Snapshot Management
+#### Snapshot Management
 
 | Command | Description |
 |---|---|
@@ -76,14 +163,14 @@ All commands are prefixed with `!` and restricted to the configured admin user.
 | `!snap delete <node> <vm> <name>` | Delete a snapshot |
 | `!snap rollback <node> <vm> <name>` | Roll back to a snapshot |
 
-### System Information
+#### System Information
 
 | Command | Description |
 |---|---|
 | `!servers <node>` | List all VMs with status and RAM usage |
 | `!node ip <node>` | Show the node's IP address |
 
-### Session
+#### Session
 
 | Command | Description |
 |---|---|
@@ -92,65 +179,10 @@ All commands are prefixed with `!` and restricted to the configured admin user.
 
 > `<vm>` accepts either a numeric VM ID or a VM name.
 
----
-
-## Voice Clipping
-
-The bot can passively listen in a Discord voice channel and automatically clip the last 30 seconds of audio whenever a configured trigger word is spoken. The clip is saved to disk and posted to a Discord text channel. After each clip, the bot also announces **"Slur has been Clipped"** aloud in the voice channel using text-to-speech.
-
-### How it works
-
-1. The admin issues `!voice join` — the bot joins the VC and starts a rolling 30-second audio buffer.
-2. Speech is continuously transcribed in the background using [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (tiny model, CPU, no external API).
-3. When any trigger word appears in a transcription, the bot:
-   - Saves the last 30 seconds as a WAV file to `./clips/`
-   - Posts the WAV to the configured clips channel (or the join channel if none is set)
-   - Speaks "Slur has been Clipped" in the VC via gTTS
-   - Starts a cooldown period (default 30 s) before the next trigger can fire
-
-### Voice Commands
-
-| Command | Description |
-|---|---|
-| `!voice join [channel]` | Join your current VC, or a channel by name/ID |
-| `!voice leave` | Leave the VC and stop listening |
-| `!voice trigger add <word>` | Add a trigger word (letters only) |
-| `!voice trigger remove <word>` | Remove a trigger word |
-| `!voice trigger list` | List all current trigger words |
-| `!voice trigger clear` | Remove all trigger words |
-| `!voice clipschannel [#channel]` | Send clips to a dedicated channel (omit to reset to join channel) |
-| `!voice status` | Show voice channel, clips channel, buffer depth, cooldown, and trigger words |
-| `!voice cooldown <seconds>` | Set the minimum gap between clips (default `30`) |
-
-### Example setup
-
-```
-!voice trigger add poggers
-!voice trigger add slur
-!voice trigger add clip
-!voice clipschannel #clips
-!voice join
-```
-
-After this, whenever anyone in the VC says "poggers", "slur", or "clip", the bot clips the last 30 seconds and sends it to `#clips`.
-
-### Notes
-
-- Trigger word detection has a ~4 second latency (one transcription window). The full 30-second clip is unaffected — it captures audio up to the moment the word was spoken.
-- Clips are also saved to `./clips/` on the host via the Docker volume, so they persist across restarts.
-- Silence gaps are preserved in clips; the buffer is wall-clock-time-aware, not based on byte count.
-- The Whisper tiny model is baked into the Docker image at build time for fast startup.
-
----
-
-## Development
+### Proxmox bot development
 
 ```sh
 make test       # run tests in Docker
-make coverage   # run tests with coverage report
 make lint       # flake8
 make format     # black + isort + autopep8
-make logs       # tail container logs
 ```
-
-New commands can be added to `src/bot/commands.py` using the `@command` decorator. Voice commands are handled separately in `src/bot/voice_commands.py` since they require async operations.
