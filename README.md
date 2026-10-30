@@ -4,7 +4,9 @@ A Discord bot that sits in a voice channel, listens for trigger words you choose
 
 Speech recognition runs locally with [faster-whisper](https://github.com/SYSTRAN/faster-whisper), so voice audio never leaves your machine.
 
-## How it works
+Built on earlier open-source work by seanofthewired and Brian Royer. See [Credits](#credits).
+
+![Discord Proxmox Bot](https://i.imgur.com/VjCRZEG.png "Discord Proxmox Bot")
 
 1. `/clip join` connects the bot to your voice channel. It keeps the last 60 seconds of everyone's audio in memory.
 2. Each speaker's audio is transcribed in short windows (about every 5 seconds, or as soon as they stop talking). Whisper is given your trigger words as hints, and returns a timestamp for every word.
@@ -196,10 +198,72 @@ All commands are prefixed with `!` and restricted to the configured admin user.
 
 > `<vm>` accepts either a numeric VM ID or a VM name.
 
-### Proxmox bot development
+---
+
+## Voice Clipping
+
+The bot can passively listen in a Discord voice channel and automatically clip the last 30 seconds of audio whenever a configured trigger word is spoken. The clip is saved to disk and posted to a Discord text channel. After each clip, the bot also announces the clip aloud in the voice channel using text-to-speech.
+
+### How it works
+
+1. The admin issues `!voice join` — the bot joins the VC and starts a rolling 30-second audio buffer.
+2. Speech is continuously transcribed in the background using [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (tiny model, CPU, no external API).
+3. When any trigger word appears in a transcription, the bot:
+   - Saves the last 30 seconds as a WAV file to `./clips/`
+   - Posts the WAV to the configured clips channel (or the join channel if none is set)
+   - Announces the clip in the VC via gTTS
+   - Starts a cooldown period (default 30 s) before the next trigger can fire
+
+### Voice Commands
+
+| Command | Description |
+|---|---|
+| `!voice join [channel]` | Join your current VC, or a channel by name/ID |
+| `!voice leave` | Leave the VC and stop listening |
+| `!voice trigger add <word>` | Add a trigger word (letters only) |
+| `!voice trigger remove <word>` | Remove a trigger word |
+| `!voice trigger list` | List all current trigger words |
+| `!voice trigger clear` | Remove all trigger words |
+| `!voice clipschannel [#channel]` | Send clips to a dedicated channel (omit to reset to join channel) |
+| `!voice status` | Show voice channel, clips channel, buffer depth, cooldown, and trigger words |
+| `!voice cooldown <seconds>` | Set the minimum gap between clips (default `30`) |
+
+### Example setup
+
+```
+!voice trigger add clip
+!voice trigger add highlight
+!voice clipschannel #clips
+!voice join
+```
+
+After this, whenever anyone in the VC says "clip" or "highlight", the bot clips the last 30 seconds and sends it to `#clips`.
+
+### Notes
+
+- Trigger word detection has a ~4 second latency (one transcription window). The full 30-second clip is unaffected — it captures audio up to the moment the word was spoken.
+- Clips are also saved to `./clips/` on the host via the Docker volume, so they persist across restarts.
+- Silence gaps are preserved in clips; the buffer is wall-clock-time-aware, not based on byte count.
+- The Whisper tiny model is baked into the Docker image at build time for fast startup.
+
+---
+
+## Development
 
 ```sh
 make test       # run tests in Docker
 make lint       # flake8
 make format     # black + isort + autopep8
 ```
+
+New commands can be added to `src/bot/commands.py` using the `@command` decorator. Voice commands are handled separately in `src/bot/voice_commands.py` since they require async operations.
+
+---
+
+## Credits
+
+- [ProxmoxBot](https://github.com/seanofthewired/ProxmoxBot) by seanofthewired: the original bot (2023).
+- [proxmox-bot](https://github.com/shyce/proxmox-bot) by Brian Royer: refactored command system, Docker setup and test suite (2024).
+- Voice clipping (`src/bot/voice_*.py`) by Jared Rogers (2026).
+
+Licensed under the GNU General Public License v3.0. See [COPYING](COPYING).
