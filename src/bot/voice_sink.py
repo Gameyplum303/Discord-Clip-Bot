@@ -214,7 +214,7 @@ async def _send_clip(
         logger.exception("Error sending clip file to Discord channel")
 
     if voice_client and voice_client.is_connected():
-        await _play_tts(voice_client, "Slur has been Clipped")
+        await _play_tts(voice_client, "Clip saved")
 
 
 async def _play_tts(voice_client, text: str) -> None:
