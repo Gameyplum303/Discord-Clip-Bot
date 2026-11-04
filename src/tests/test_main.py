@@ -154,14 +154,14 @@ async def test_on_message_voice_routes_to_voice_handler(bot):
 async def test_on_message_voice_subcommand_args_parsed(bot):
     """Arguments after the subcommand are passed correctly."""
     message = AsyncMock(spec=Message)
-    message.content = "!voice trigger add slur"
+    message.content = "!voice trigger add highlight"
     message.author.id = "admin_id"
     message.author.bot = False
     message.channel = AsyncMock()
 
     with patch.object(bot.voice_handler, "handle", AsyncMock(return_value="ok")) as mock_handle:
         await bot.on_message(message)
-        mock_handle.assert_awaited_once_with("trigger", ["add", "slur"], message)
+        mock_handle.assert_awaited_once_with("trigger", ["add", "highlight"], message)
 
 
 @pytest.mark.asyncio
@@ -248,6 +248,7 @@ async def test_voice_command_accepted_from_vc_side_chat(bot):
     message.author.bot = False
     message.channel = MagicMock()
     message.channel.id = 999             # same as VC channel
+    message.channel.send = AsyncMock()
 
     with patch.object(bot.voice_handler, "handle", AsyncMock(return_value="ok")) as mock_handle:
         await bot.on_message(message)
@@ -272,6 +273,7 @@ async def test_voice_command_accepted_from_vc_member(bot):
     message.author.voice.channel.id = 888   # author is in the bot's VC
     message.channel = MagicMock()
     message.channel.id = 777               # different text channel
+    message.channel.send = AsyncMock()
 
     with patch.object(bot.voice_handler, "handle", AsyncMock(return_value="ok")) as mock_handle:
         await bot.on_message(message)
