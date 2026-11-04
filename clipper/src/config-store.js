@@ -8,6 +8,14 @@ export const DEFAULTS = Object.freeze({
   beforeSec: 10,
   afterSec: 10,
   optedOut: [], // user ids whose voice is never recorded
+  // Everything below is off by default so existing setups behave exactly as before.
+  autoJoinChannelId: null, // join this voice channel whenever someone is in it
+  detailedPosts: false, // speaker, transcript and trim/delete buttons on clip posts
+  sound: false, // play a short chime in the call after each clip
+  fuzzy: false, // accept near-miss spellings of trigger words
+  triggerChannels: {}, // trigger phrase -> text channel id, overrides channelId
+  maxClips: 0, // keep at most this many saved clips per server (0 = no limit)
+  maxDays: 0, // delete saved clips older than this (0 = keep forever)
 });
 
 // Per-server settings, saved to a JSON file so they survive restarts.

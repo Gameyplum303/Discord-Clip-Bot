@@ -1,4 +1,9 @@
+import { Readable } from 'node:stream';
 import {
+  AudioPlayerStatus,
+  createAudioPlayer,
+  createAudioResource,
+  StreamType,
   joinVoiceChannel,
   entersState,
   EndBehaviorType,
@@ -7,6 +12,7 @@ import {
 import prism from 'prism-media';
 import { AudioTimeline, toWhisperPcm } from './audio-timeline.js';
 import { findTrigger } from './triggers.js';
+import { makeChime } from './chime.js';
 
 // Each speaker's audio is sent to speech recognition in windows of this size,
 // or sooner when they stop talking.
@@ -53,7 +59,8 @@ export class GuildListener {
       guildId: this.guild.id,
       adapterCreator: this.guild.voiceAdapterCreator,
       selfDeaf: false,
-      selfMute: true,
+      // Stay muted unless the "clipped" sound is turned on.
+      selfMute: !this.config().sound,
     });
     this.connection = connection;
 
@@ -131,9 +138,10 @@ export class GuildListener {
   onWords(userId, windowStartMs, words) {
     if (this.destroyed) return;
     const cfg = this.config();
-    const hit = findTrigger(words, cfg.triggers);
+    const hit = findTrigger(words, cfg.triggers, { fuzzy: cfg.fuzzy });
     this.testers.get(userId)?.heard.push({ text: words.map((w) => w.word).join('').trim(), trigger: hit?.trigger ?? null });
     if (!hit || !cfg.triggers.length) return;
+    hit.transcript = words.map((w) => w.word).join('').trim();
 
     const hitMs = windowStartMs + hit.start * 1000;
     const t = now();
@@ -154,14 +162,17 @@ export class GuildListener {
   async postClip({ clipStart, clipEnd, hit, userId, cfg }) {
     try {
       const pcm = this.timeline.render(clipStart, clipEnd);
+      // A per-trigger channel wins, then the server's clips channel, then where /clip join was used.
+      const channelId = (hit && cfg.triggerChannels[hit.trigger]) || cfg.channelId;
       const channel =
-        (cfg.channelId && (await this.guild.channels.fetch(cfg.channelId).catch(() => null))) ||
+        (channelId && (await this.guild.channels.fetch(channelId).catch(() => null))) ||
         this.fallbackTextChannel;
       if (!channel) {
         this.log.warn?.(`[${this.guild.name}] no output channel set, dropping clip`);
         return;
       }
-      await this.saveClip({ pcm, hit, userId, channel, cfg });
+      await this.saveClip({ pcm, hit, userId, channel, cfg, voiceChannel: this.voiceChannel });
+      if (cfg.sound) this.playChime();
     } catch (err) {
       this.log.error?.(`[${this.guild.name}] failed to post clip:`, err);
     }
@@ -203,6 +214,23 @@ export class GuildListener {
     this.testers.delete(userId);
   }
 
+  // Mute or unmute the bot in the call when the "clipped" sound is switched on or off.
+  setSound(on) {
+    if (this.destroyed || !this.connection) return;
+    this.connection.rejoin({ channelId: this.voiceChannel.id, selfDeaf: false, selfMute: !on });
+  }
+
+  playChime() {
+    if (this.destroyed || !this.connection) return;
+    if (!this.player) {
+      this.player = createAudioPlayer();
+      this.player.on('error', (err) => this.log.warn?.(`Chime playback failed: ${err.message}`));
+      this.connection.subscribe(this.player);
+    }
+    if (this.player.state.status !== AudioPlayerStatus.Idle) return;
+    this.player.play(createAudioResource(Readable.from([makeChime()]), { inputType: StreamType.Raw }));
+  }
+
   status() {
     return {
       channel: this.voiceChannel,
@@ -217,6 +245,7 @@ export class GuildListener {
     this.destroyed = true;
     for (const sub of this.subscriptions.values()) sub.stream.destroy();
     this.subscriptions.clear();
+    this.player?.stop(true);
     if (this.connection && this.connection.state.status !== VoiceConnectionStatus.Destroyed) {
       this.connection.destroy();
     }

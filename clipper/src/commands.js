@@ -1,4 +1,5 @@
 import {
+  AttachmentBuilder,
   ChannelType,
   escapeMarkdown,
   InteractionContextType,
@@ -7,6 +8,7 @@ import {
   MessageFlags,
 } from 'discord.js';
 import { normalizePhrase } from './triggers.js';
+import { ClipLibrary } from './clip-library.js';
 
 export const MAX_TRIGGERS = 25;
 export const MAX_CLIP_SIDE_SEC = 30;
@@ -35,7 +37,19 @@ export const commandDefinitions = [
       s.setName('test').setDescription(`Check what the bot hears you say over the next ${TEST_SECONDS} seconds`),
     )
     .addSubcommand((s) => s.setName('optout').setDescription('Never record your voice in this server'))
-    .addSubcommand((s) => s.setName('optin').setDescription('Allow your voice in clips again')),
+    .addSubcommand((s) => s.setName('optin').setDescription('Allow your voice in clips again'))
+    .addSubcommand((s) =>
+      s
+        .setName('list')
+        .setDescription('Show recent saved clips')
+        .addIntegerOption((o) => o.setName('count').setDescription('How many (default 10)').setMinValue(1).setMaxValue(25)),
+    )
+    .addSubcommand((s) =>
+      s
+        .setName('get')
+        .setDescription('Get a saved clip by its id (shown in /clip list)')
+        .addStringOption((o) => o.setName('id').setDescription('Clip id').setRequired(true).setMinLength(8).setMaxLength(8)),
+    ),
 
   new SlashCommandBuilder()
     .setName('clipconfig')
@@ -63,7 +77,21 @@ export const commandDefinitions = [
             ),
         )
         .addSubcommand((s) => s.setName('list').setDescription('List trigger words'))
-        .addSubcommand((s) => s.setName('clear').setDescription('Remove all trigger words')),
+        .addSubcommand((s) => s.setName('clear').setDescription('Remove all trigger words'))
+        .addSubcommand((s) =>
+          s
+            .setName('channel')
+            .setDescription('Send clips for one trigger to their own channel')
+            .addStringOption((o) =>
+              o.setName('phrase').setDescription('Trigger word or phrase').setRequired(true).setAutocomplete(true),
+            )
+            .addChannelOption((o) =>
+              o
+                .setName('channel')
+                .setDescription('Leave empty to use the normal clips channel again')
+                .addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement, ChannelType.GuildVoice),
+            ),
+        ),
     )
     .addSubcommand((s) =>
       s
@@ -95,6 +123,52 @@ export const commandDefinitions = [
         .addIntegerOption((o) =>
           o.setName('after').setDescription('Seconds after (default 10)').setRequired(true).setMinValue(0).setMaxValue(MAX_CLIP_SIDE_SEC),
         ),
+    )
+    .addSubcommand((s) =>
+      s
+        .setName('autojoin')
+        .setDescription('Join a voice channel automatically when someone is in it')
+        .addChannelOption((o) =>
+          o
+            .setName('channel')
+            .setDescription('Leave empty to turn auto-join off')
+            .addChannelTypes(ChannelType.GuildVoice, ChannelType.GuildStageVoice),
+        ),
+    )
+    .addSubcommand((s) =>
+      s
+        .setName('posts')
+        .setDescription('Choose how clips are posted')
+        .addStringOption((o) =>
+          o
+            .setName('style')
+            .setDescription('Detailed adds who said it, a transcript, and trim/delete buttons')
+            .setRequired(true)
+            .addChoices({ name: 'simple (default)', value: 'simple' }, { name: 'detailed', value: 'detailed' }),
+        ),
+    )
+    .addSubcommand((s) =>
+      s
+        .setName('sound')
+        .setDescription('Play a short chime in the call after each clip')
+        .addBooleanOption((o) => o.setName('enabled').setDescription('Off by default').setRequired(true)),
+    )
+    .addSubcommand((s) =>
+      s
+        .setName('fuzzy')
+        .setDescription('Also trigger on near misses, like "clipp" for "clip"')
+        .addBooleanOption((o) => o.setName('enabled').setDescription('Off by default').setRequired(true)),
+    )
+    .addSubcommand((s) =>
+      s
+        .setName('storage')
+        .setDescription('Limit how many saved clips are kept; older ones are deleted automatically')
+        .addIntegerOption((o) =>
+          o.setName('max_clips').setDescription('Keep at most this many (0 = no limit)').setRequired(true).setMinValue(0).setMaxValue(100_000),
+        )
+        .addIntegerOption((o) =>
+          o.setName('max_days').setDescription('Delete clips older than this many days (0 = keep forever)').setRequired(true).setMinValue(0).setMaxValue(3650),
+        ),
     ),
 ].map((c) => c.toJSON());
 
@@ -104,7 +178,20 @@ const canJoin = (perms) =>
 const ephemeral = (content) => ({ content, flags: MessageFlags.Ephemeral, allowedMentions: { parse: [] } });
 const fmtTriggers = (t) => (t.length ? t.map((w) => `\`${w}\``).join(', ') : '_none yet: add one with `/clipconfig trigger add`_');
 
-export function createCommandHandler({ store, listeners, startListening }) {
+const sendPerms = [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.AttachFiles];
+const canPost = (channel, me) => {
+  const perms = channel.permissionsFor(me);
+  return Boolean(perms && sendPerms.every((p) => perms.has(p)));
+};
+
+export function createCommandHandler({ store, listeners, startListening, library = null }) {
+  // Saved clips are only visible to people who could have been in the call they came from.
+  function canSeeClip(guild, member, clip) {
+    const vc = clip.voiceChannelId && guild.channels.cache.get(clip.voiceChannelId);
+    if (vc) return canJoin(vc.permissionsFor(member));
+    return Boolean(member.permissions?.has(PermissionFlagsBits.ManageGuild));
+  }
+
   async function handleClip(interaction) {
     const sub = interaction.options.getSubcommand();
     const guild = interaction.guild;
@@ -147,6 +234,7 @@ export function createCommandHandler({ store, listeners, startListening }) {
       if (!canJoin(listener.voiceChannel.permissionsFor(member))) {
         return interaction.reply(ephemeral("You need access to the channel I'm in to stop me."));
       }
+      listener.manualLeave = true;
       listener.destroy();
       return interaction.reply('👋 Stopped listening.');
     }
@@ -200,6 +288,32 @@ export function createCommandHandler({ store, listeners, startListening }) {
       });
     }
 
+    if (sub === 'list' || sub === 'get') {
+      if (!library) return interaction.reply(ephemeral('Clip history is off because clips aren\'t being saved to disk (set `CLIPS_DIR`).'));
+      const member = await guild.members.fetch(interaction.user.id);
+
+      if (sub === 'list') {
+        const count = interaction.options.getInteger('count') ?? 10;
+        const clips = library.list(guild.id).filter((c) => canSeeClip(guild, member, c)).slice(0, count);
+        if (!clips.length) return interaction.reply(ephemeral('No saved clips yet.'));
+        const lines = clips.map((c) => {
+          const what = c.trigger ? `**${c.trigger}**` : 'manual';
+          const link = c.messageUrl ? ` · [post](${c.messageUrl})` : '';
+          return `\`${c.id}\` ${what} by <@${c.userId}> · <t:${Math.floor(c.createdAt / 1000)}:R>${link}`;
+        });
+        return interaction.reply(ephemeral(`${lines.join('\n')}\n-# Use \`/clip get id:<id>\` to download one.`));
+      }
+
+      const id = interaction.options.getString('id').trim().toLowerCase();
+      const clip = ClipLibrary.isValidId(id) ? library.get(guild.id, id) : null;
+      if (!clip || !canSeeClip(guild, member, clip)) return interaction.reply(ephemeral(`No clip \`${id.replace(/`/g, '')}\` found.`));
+      const what = clip.trigger ? `**${clip.trigger}**` : 'a manual clip';
+      return interaction.reply({
+        ...ephemeral(`🎬 ${what} by <@${clip.userId}>, <t:${Math.floor(clip.createdAt / 1000)}:R>`),
+        files: [new AttachmentBuilder(library.read(clip), { name: clip.file })],
+      });
+    }
+
     if (sub === 'status') {
       const listener = listeners.get(guild.id);
       const s = listener?.status();
@@ -213,6 +327,8 @@ export function createCommandHandler({ store, listeners, startListening }) {
             `**Clips go to:** ${cfg.channelId ? `<#${cfg.channelId}>` : 'the channel `/clip join` was used in'}`,
             `**Clip length:** ${cfg.beforeSec}s before + ${cfg.afterSec}s after`,
             `**Cooldown:** ${cfg.cooldownSec}s`,
+            `**Auto-join:** ${cfg.autoJoinChannelId ? `<#${cfg.autoJoinChannelId}>` : 'off'} · **Posts:** ${cfg.detailedPosts ? 'detailed' : 'simple'} · **Chime:** ${cfg.sound ? 'on' : 'off'} · **Fuzzy:** ${cfg.fuzzy ? 'on' : 'off'}`,
+            `**Storage:** ${cfg.maxClips ? `${cfg.maxClips} clips max` : 'no clip limit'}, ${cfg.maxDays ? `${cfg.maxDays} days` : 'kept forever'}`,
             `**Your voice:** ${cfg.optedOut.includes(interaction.user.id) ? 'opted out (`/clip optin` to undo)' : 'included (`/clip optout` to stop)'}`,
           ].join('\n'),
         ),
@@ -239,21 +355,35 @@ export function createCommandHandler({ store, listeners, startListening }) {
       if (sub === 'remove') {
         const phrase = normalizePhrase(interaction.options.getString('phrase'));
         if (!cfg.triggers.includes(phrase)) return interaction.reply(ephemeral(`\`${phrase}\` isn't a trigger.`));
-        const next = store.update(guildId, { triggers: cfg.triggers.filter((t) => t !== phrase) });
+        const { [phrase]: _dropped, ...triggerChannels } = cfg.triggerChannels;
+        const next = store.update(guildId, { triggers: cfg.triggers.filter((t) => t !== phrase), triggerChannels });
         return interaction.reply(ephemeral(`🗑️ Removed \`${phrase}\`. Triggers: ${fmtTriggers(next.triggers)}`));
       }
       if (sub === 'list') return interaction.reply(ephemeral(`Triggers: ${fmtTriggers(cfg.triggers)}`));
+      if (sub === 'channel') {
+        const phrase = normalizePhrase(interaction.options.getString('phrase'));
+        if (!cfg.triggers.includes(phrase)) return interaction.reply(ephemeral(`\`${phrase}\` isn't a trigger. Add it first.`));
+        const channel = interaction.options.getChannel('channel');
+        const { [phrase]: _old, ...rest } = cfg.triggerChannels;
+        if (!channel) {
+          store.update(guildId, { triggerChannels: rest });
+          return interaction.reply(ephemeral(`\`${phrase}\` clips will go to the normal clips channel.`));
+        }
+        if (!canPost(channel, interaction.guild.members.me)) {
+          return interaction.reply(ephemeral(`I need View Channel, Send Messages and Attach Files in ${channel}.`));
+        }
+        store.update(guildId, { triggerChannels: { ...rest, [phrase]: channel.id } });
+        return interaction.reply(ephemeral(`📁 \`${phrase}\` clips will be posted in ${channel}.`));
+      }
       if (sub === 'clear') {
-        store.update(guildId, { triggers: [] });
+        store.update(guildId, { triggers: [], triggerChannels: {} });
         return interaction.reply(ephemeral('All triggers removed.'));
       }
     }
 
     if (sub === 'channel') {
       const channel = interaction.options.getChannel('channel');
-      const perms = channel.permissionsFor(interaction.guild.members.me);
-      const needed = [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.AttachFiles];
-      if (!perms || !needed.every((p) => perms.has(p))) {
+      if (!canPost(channel, interaction.guild.members.me)) {
         return interaction.reply(ephemeral(`I need View Channel, Send Messages and Attach Files in ${channel}.`));
       }
       store.update(guildId, { channelId: channel.id });
@@ -271,6 +401,54 @@ export function createCommandHandler({ store, listeners, startListening }) {
       const afterSec = interaction.options.getInteger('after');
       store.update(guildId, { beforeSec, afterSec });
       return interaction.reply(ephemeral(`✂️ Clips will cover ${beforeSec}s before and ${afterSec}s after the trigger.`));
+    }
+
+    if (sub === 'autojoin') {
+      const channel = interaction.options.getChannel('channel');
+      if (!channel) {
+        store.update(guildId, { autoJoinChannelId: null });
+        return interaction.reply(ephemeral('Auto-join is off.'));
+      }
+      if (!canJoin(channel.permissionsFor(interaction.guild.members.me))) {
+        return interaction.reply(ephemeral(`I don't have permission to join ${channel}.`));
+      }
+      store.update(guildId, { autoJoinChannelId: channel.id });
+      const note = cfg.channelId ? '' : ' Set a clips channel with `/clipconfig channel` too, or auto-joined clips will have nowhere to go.';
+      return interaction.reply(ephemeral(`🔁 I'll join ${channel} whenever someone is in it.${note}`));
+    }
+
+    if (sub === 'posts') {
+      const detailed = interaction.options.getString('style') === 'detailed';
+      store.update(guildId, { detailedPosts: detailed });
+      return interaction.reply(
+        ephemeral(detailed ? '📝 Clip posts will show who said it, what was said, and Trim/Delete buttons.' : '📝 Clip posts are back to the simple style.'),
+      );
+    }
+
+    if (sub === 'sound') {
+      const on = interaction.options.getBoolean('enabled');
+      store.update(guildId, { sound: on });
+      listeners.get(guildId)?.setSound(on);
+      return interaction.reply(ephemeral(on ? '🔔 I\'ll play a short chime in the call after each clip.' : '🔕 Clip chime is off.'));
+    }
+
+    if (sub === 'fuzzy') {
+      const on = interaction.options.getBoolean('enabled');
+      store.update(guildId, { fuzzy: on });
+      return interaction.reply(
+        ephemeral(on ? '🔤 Fuzzy matching is on: near misses like "clipp" for "clip" will trigger too.' : '🔤 Fuzzy matching is off: only exact trigger words count.'),
+      );
+    }
+
+    if (sub === 'storage') {
+      const maxClips = interaction.options.getInteger('max_clips');
+      const maxDays = interaction.options.getInteger('max_days');
+      store.update(guildId, { maxClips, maxDays });
+      const removed = library ? library.enforceLimits(guildId, { maxClips, maxDays }).length : 0;
+      const parts = [maxClips ? `at most ${maxClips} clips` : 'any number of clips', maxDays ? `for ${maxDays} days` : 'forever'];
+      return interaction.reply(
+        ephemeral(`🗄️ I'll keep ${parts[0]} ${parts[1]}.${removed ? ` Removed ${removed} old clip(s) just now.` : ''}`),
+      );
     }
   }
 
